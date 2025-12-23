@@ -1,19 +1,19 @@
 import Navigation from "@/components/Navigation";
-import MetricsChart from "@/components/MetricsChart";
+import OrderList from "@/components/OrderList";
 
-export default function Dashboard() {
+export default function OrdersPage() {
   return (
     <div className="min-h-screen bg-gray-50">
       <Navigation />
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-24 pb-8">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
+          <h1 className="text-3xl font-bold text-gray-900">Orders</h1>
           <p className="mt-2 text-gray-600">
-            Analytics and metrics for your Shopify store
+            View and manage orders from your Shopify store
           </p>
         </div>
 
-        <MetricsChart />
+        <OrderList />
       </div>
     </div>
   );
