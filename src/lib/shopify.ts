@@ -1,4 +1,3 @@
-import { createHmac } from "crypto";
 import { Order } from "@/types/order";
 
 interface ShopifyConfig {
@@ -820,7 +819,7 @@ export async function fetchOrdersIncremental(
   return allOrders;
 }
 
-// Keep the old function for backward compatibility (e.g., for webhooks or small fetches)
+// Keep the old function for backward compatibility or small fetches
 export async function fetchOrdersFromShopify(
   limit = 250,
   after?: string | undefined,
@@ -887,15 +886,4 @@ export async function fetchOrdersFromShopify(
     hasNextPage: pageInfo.hasNextPage,
     endCursor: pageInfo.endCursor,
   };
-}
-
-export function verifyWebhookSignature(
-  body: string,
-  signature: string,
-  secret: string
-): boolean {
-  const hmac = createHmac("sha256", secret);
-  hmac.update(body, "utf8");
-  const calculatedSignature = hmac.digest("base64");
-  return calculatedSignature === signature;
 }

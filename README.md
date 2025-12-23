@@ -5,7 +5,7 @@ A Shopify order analytics application built with Next.js, MongoDB, and Tailwind 
 ## Features
 
 - **Order Management**: View and manage orders from your Shopify store
-- **Real-time Webhooks**: Automatically sync orders via Shopify webhooks
+- **Manual Sync**: Sync orders from Shopify using bulk operations or incremental GraphQL queries
 - **Analytics Dashboard**: View key metrics including order volume, revenue, and shipping costs
 - **Pagination**: Flexible pagination with customizable page sizes (20, 50, 100)
 
@@ -41,7 +41,6 @@ MONGODB_URI=mongodb://localhost:27017/protect-plus
 # Shopify Configuration
 SHOPIFY_SHOP=your-shop-name
 SHOPIFY_ACCESS_TOKEN=your-access-token
-SHOPIFY_WEBHOOK_SECRET=your-webhook-secret
 ```
 
 ### 3. Start MongoDB
@@ -64,19 +63,7 @@ pnpm dev
 
 Open [http://localhost:3000](http://localhost:3000) to view the dashboard.
 
-## Shopify Webhook Setup
-
-To enable automatic order syncing:
-
-1. Go to your Shopify Admin → Settings → Notifications → Webhooks
-2. Create a new webhook:
-   - **Event**: Order creation
-   - **Format**: JSON
-   - **URL**: `https://your-domain.com/api/webhooks/orders`
-   - **API version**: 2024-01
-3. Copy the webhook secret and add it to `.env.local` as `SHOPIFY_WEBHOOK_SECRET`
-
-## Manual Order Sync
+## Order Sync
 
 You can manually sync orders from Shopify by calling:
 
@@ -92,10 +79,10 @@ Content-Type: application/json
 ## API Endpoints
 
 - `GET /api/orders?page=1&limit=20` - Get paginated orders list
-- `POST /api/orders` - Manual sync orders from Shopify
+- `POST /api/orders` - Sync orders from Shopify (uses bulk operations for large datasets, GraphQL for small updates)
 - `GET /api/orders/[id]` - Get single order details
 - `GET /api/metrics?days=30` - Get analytics metrics
-- `POST /api/webhooks/orders` - Shopify webhook endpoint
+- `GET /api/orders?status=bulk` - Check bulk sync status
 
 ## Project Structure
 
@@ -104,8 +91,7 @@ src/
 ├── app/
 │   ├── api/
 │   │   ├── orders/          # Order API routes
-│   │   ├── metrics/         # Metrics API route
-│   │   └── webhooks/        # Webhook endpoints
+│   │   └── metrics/         # Metrics API route
 │   ├── page.tsx             # Dashboard page
 │   └── layout.tsx            # Root layout
 ├── components/
@@ -124,7 +110,7 @@ src/
 ### Architecture
 - **Full-stack Next.js**: Single codebase for faster development and simpler deployment
 - **Server Components**: Direct database access for better performance
-- **API Routes**: RESTful endpoints for client-side data fetching and webhooks
+- **API Routes**: RESTful endpoints for client-side data fetching and order synchronization
 - **React Query (TanStack Query)**: Client-side state management and caching for optimal data fetching and synchronization
 
 ### Sync Strategy
