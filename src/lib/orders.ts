@@ -1,6 +1,27 @@
 import { getDb } from "./mongodb";
 import { Order, OrderMetrics } from "@/types/order";
 
+interface SyncMetadata {
+  _id: string;
+  lastSyncAt: string;
+  updatedAt: string;
+}
+
+interface BulkSyncState {
+  _id: string;
+  status: "idle" | "pending" | "completed" | "failed" | "canceled";
+  operationId?: string;
+  updatedAt: string;
+  synced?: number;
+}
+
+const SYNC_METADATA_KEY = "sync_metadata";
+const BULK_STATE_KEY = "bulk_state";
+const BULK_STATE_TTL_MS = 60_000;
+
+let cachedBulkState: BulkSyncState | null = null;
+let cachedBulkStateAt = 0;
+
 export function serializeOrder(order: Order): Order {
   return {
     ...order,
@@ -72,20 +93,19 @@ export async function getMetricsFromDb(days: number = 30) {
   const db = await getDb();
   const ordersCollection = db.collection<Order>("orders");
 
-  // const startDate = new Date();
-  // startDate.setDate(startDate.getDate() - days);
-  // startDate.setHours(0, 0, 0, 0); // Start of day
-  // const startDateISO = startDate.toISOString();
-  // console.log("startDateISO", startDateISO);
   // Query orders from the last N days
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - days);
+  startDate.setHours(0, 0, 0, 0); // Start of day
+  const startDateISO = startDate.toISOString();
+
   // Since created_at is stored as ISO string, we can use string comparison
   const orders = await ordersCollection
     .find({
-      // created_at: { $gte: startDateISO },
+      created_at: { $gte: startDateISO },
     })
     .sort({ created_at: 1 })
     .toArray();
-  console.log("getMetricsFromDb", orders);
 
   const metricsByDate = new Map<string, OrderMetrics>();
 
@@ -138,4 +158,88 @@ export async function getMetricsFromDb(days: number = 30) {
       averageOrderValue: totalOrders > 0 ? totalRevenue / totalOrders : 0,
     },
   };
+}
+
+/**
+ * Get the last sync timestamp from the database
+ */
+export async function getLastSyncTimestamp(): Promise<string | null> {
+  const db = await getDb();
+  const metadataCollection = db.collection<SyncMetadata>("sync_metadata");
+
+  const metadata = await metadataCollection.findOne({
+    _id: SYNC_METADATA_KEY,
+  });
+  return metadata?.lastSyncAt || null;
+}
+
+/**
+ * Update the last sync timestamp
+ */
+export async function updateLastSyncTimestamp(
+  timestamp: string
+): Promise<void> {
+  const db = await getDb();
+  const metadataCollection = db.collection<SyncMetadata>("sync_metadata");
+
+  await metadataCollection.updateOne(
+    { _id: SYNC_METADATA_KEY },
+    {
+      $set: {
+        lastSyncAt: timestamp,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+    { upsert: true }
+  );
+}
+
+/**
+ * Get the cached bulk sync state to avoid frequent Shopify checks
+ */
+export async function getBulkSyncState(): Promise<BulkSyncState> {
+  const now = Date.now();
+  if (cachedBulkState && now - cachedBulkStateAt < BULK_STATE_TTL_MS) {
+    return cachedBulkState;
+  }
+
+  const db = await getDb();
+  const stateCollection = db.collection<BulkSyncState>("sync_state");
+  const state =
+    (await stateCollection.findOne({ _id: BULK_STATE_KEY })) ||
+    ({
+      _id: BULK_STATE_KEY,
+      status: "idle",
+      updatedAt: new Date(0).toISOString(),
+    } as BulkSyncState);
+
+  cachedBulkState = state;
+  cachedBulkStateAt = now;
+  return state;
+}
+
+/**
+ * Update bulk sync state and refresh the in-memory cache
+ */
+export async function updateBulkSyncState(
+  partial: Partial<BulkSyncState>
+): Promise<void> {
+  const db = await getDb();
+  const stateCollection = db.collection<BulkSyncState>("sync_state");
+
+  const newState: BulkSyncState = {
+    _id: BULK_STATE_KEY,
+    status: "idle",
+    updatedAt: new Date().toISOString(),
+    ...partial,
+  } as BulkSyncState;
+
+  await stateCollection.updateOne(
+    { _id: BULK_STATE_KEY },
+    { $set: { ...newState, updatedAt: newState.updatedAt } },
+    { upsert: true }
+  );
+
+  cachedBulkState = newState;
+  cachedBulkStateAt = Date.now();
 }

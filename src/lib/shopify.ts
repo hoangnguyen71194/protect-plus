@@ -30,8 +30,8 @@ export function getShopifyConfig(): ShopifyConfig {
 }
 
 const ORDERS_QUERY = `
-  query getOrders($first: Int!, $after: String) {
-    orders(first: $first, after: $after, sortKey: CREATED_AT, reverse: true) {
+  query getOrders($first: Int!, $after: String, $query: String) {
+    orders(first: $first, after: $after, query: $query, sortKey: CREATED_AT, reverse: true) {
       edges {
         node {
           id
@@ -268,6 +268,22 @@ const BULK_OPERATION_STATUS_QUERY = `
   }
 `;
 
+const CURRENT_BULK_OPERATION_QUERY = `
+  query currentBulkOperation {
+    currentBulkOperation {
+      id
+      status
+      errorCode
+      createdAt
+      completedAt
+      objectCount
+      fileSize
+      url
+      partialDataUrl
+    }
+  }
+`;
+
 interface BulkOperationResponse {
   bulkOperation: {
     id: string;
@@ -355,7 +371,7 @@ async function pollBulkOperationStatus(
   throw new Error("Bulk operation timeout - operation took too long");
 }
 
-async function downloadBulkData(url: string): Promise<Order[]> {
+export async function downloadBulkData(url: string): Promise<Order[]> {
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Failed to download bulk data: ${response.statusText}`);
@@ -421,19 +437,23 @@ interface BulkOrderData {
     country?: string;
     zip?: string;
   };
-  lineItems?: Array<{
-    id?: string;
-    title?: string;
-    quantity?: number;
-    originalUnitPriceSet?: {
-      shopMoney?: {
-        amount?: string;
+  lineItems?: {
+    edges?: Array<{
+      node?: {
+        id?: string;
+        title?: string;
+        quantity?: number;
+        originalUnitPriceSet?: {
+          shopMoney?: {
+            amount?: string;
+          };
+        };
+        variant?: {
+          sku?: string;
+        };
       };
-    };
-    variant?: {
-      sku?: string;
-    };
-  }>;
+    }>;
+  };
   displayFinancialStatus?: string;
   displayFulfillmentStatus?: string;
   currencyCode?: string;
@@ -480,13 +500,17 @@ function transformBulkOrderToOrder(bulkOrder: BulkOrderData): Order {
           zip: bulkOrder.shippingAddress.zip || undefined,
         }
       : undefined,
-    line_items: (bulkOrder.lineItems || []).map((item) => ({
-      id: item.id?.replace("gid://shopify/LineItem/", "") || "",
-      title: item.title || "",
-      quantity: item.quantity || 0,
-      price: item.originalUnitPriceSet?.shopMoney?.amount || "0",
-      sku: item.variant?.sku || undefined,
-    })),
+    line_items:
+      bulkOrder.lineItems?.edges?.map((edge) => {
+        const item = edge.node || {};
+        return {
+          id: item.id?.replace("gid://shopify/LineItem/", "") || "",
+          title: item.title || "",
+          quantity: item.quantity || 0,
+          price: item.originalUnitPriceSet?.shopMoney?.amount || "0",
+          sku: item.variant?.sku || undefined,
+        };
+      }) || [],
     financial_status: bulkOrder.displayFinancialStatus || undefined,
     fulfillment_status: bulkOrder.displayFulfillmentStatus || undefined,
     currency: bulkOrder.currencyCode || "USD",
@@ -502,69 +526,84 @@ function transformBulkOrderToOrder(bulkOrder: BulkOrderData): Order {
   };
 }
 
-export async function syncOrdersBulk(): Promise<Order[]> {
-  // Create bulk operation query
-  const bulkQuery = `
+export async function syncOrdersBulk(sinceDate?: string): Promise<Order[]> {
+  // Bulk operations require traversing connections via edges -> node
+  let bulkQuery = `
     {
-      orders {
-        id
-        name
-        email
-        createdAt
-        updatedAt
-        totalPriceSet {
-          shopMoney {
-            amount
+      orders`;
+
+  if (sinceDate) {
+    bulkQuery += `(query: "created_at:>='${sinceDate}'")`;
+  }
+
+  bulkQuery += ` {
+        edges {
+          node {
+            __typename
+            id
+            name
+            email
+            createdAt
+            updatedAt
+            totalPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+            subtotalPriceSet {
+              shopMoney {
+                amount
+              }
+            }
+            totalTaxSet {
+              shopMoney {
+                amount
+              }
+            }
+            totalShippingPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+            shippingAddress {
+              firstName
+              lastName
+              address1
+              address2
+              city
+              province
+              country
+              zip
+            }
+            lineItems {
+              edges {
+                node {
+                  id
+                  title
+                  quantity
+                  originalUnitPriceSet {
+                    shopMoney {
+                      amount
+                    }
+                  }
+                  variant {
+                    sku
+                  }
+                }
+              }
+            }
+            displayFinancialStatus
+            displayFulfillmentStatus
             currencyCode
-          }
-        }
-        subtotalPriceSet {
-          shopMoney {
-            amount
-          }
-        }
-        totalTaxSet {
-          shopMoney {
-            amount
-          }
-        }
-        totalShippingPriceSet {
-          shopMoney {
-            amount
-            currencyCode
-          }
-        }
-        shippingAddress {
-          firstName
-          lastName
-          address1
-          address2
-          city
-          province
-          country
-          zip
-        }
-        lineItems {
-          id
-          title
-          quantity
-          originalUnitPriceSet {
-            shopMoney {
-              amount
+            customer {
+              id
+              email
+              firstName
+              lastName
             }
           }
-          variant {
-            sku
-          }
-        }
-        displayFinancialStatus
-        displayFulfillmentStatus
-        currencyCode
-        customer {
-          id
-          email
-          firstName
-          lastName
         }
       }
     }
@@ -596,10 +635,196 @@ export async function syncOrdersBulk(): Promise<Order[]> {
   return orders;
 }
 
+/**
+ * Count orders created after a specific date
+ * Returns the count, but stops early if it exceeds the threshold
+ */
+export async function countOrdersSinceDate(
+  sinceDate: string,
+  threshold: number = 100
+): Promise<number> {
+  // We don't need exact count - we just need to know if it's above threshold
+  // Fetch orders in batches until we exceed threshold or run out
+  let count = 0;
+  let hasNextPage = true;
+  let cursor: string | undefined = undefined;
+
+  while (hasNextPage && count < threshold) {
+    const result = await fetchOrdersFromShopify(250, cursor, sinceDate);
+    count += result.orders.length;
+    hasNextPage = result.hasNextPage;
+    cursor = result.endCursor || undefined;
+
+    // If we've exceeded threshold, we can stop early
+    if (count >= threshold) {
+      return count; // Return at least threshold
+    }
+  }
+
+  return count;
+}
+
+export interface BulkOperationStatus {
+  id: string;
+  status: string;
+  errorCode?: string;
+  url?: string;
+  objectCount?: string;
+  createdAt?: string;
+  completedAt?: string;
+}
+
+/**
+ * Get current bulk operation status (if any)
+ */
+export async function getCurrentBulkOperation(): Promise<BulkOperationStatus | null> {
+  const data = (await executeGraphQLQuery(CURRENT_BULK_OPERATION_QUERY)) as {
+    currentBulkOperation: BulkOperationStatus | null;
+  };
+
+  if (!data.currentBulkOperation) {
+    return null;
+  }
+
+  return data.currentBulkOperation;
+}
+
+/**
+ * Start a bulk orders operation and return its operation ID
+ */
+export async function startOrdersBulk(
+  sinceDate?: string
+): Promise<{ operationId: string }> {
+  // Build bulk query (edges -> node)
+  let bulkQuery = `
+    {
+      orders`;
+
+  if (sinceDate) {
+    bulkQuery += `(query: "created_at:>='${sinceDate}'")`;
+  }
+
+  bulkQuery += ` {
+        edges {
+          node {
+            __typename
+            id
+            name
+            email
+            createdAt
+            updatedAt
+            totalPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+            subtotalPriceSet {
+              shopMoney {
+                amount
+              }
+            }
+            totalTaxSet {
+              shopMoney {
+                amount
+              }
+            }
+            totalShippingPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+            shippingAddress {
+              firstName
+              lastName
+              address1
+              address2
+              city
+              province
+              country
+              zip
+            }
+            lineItems {
+              edges {
+                node {
+                  id
+                  title
+                  quantity
+                  originalUnitPriceSet {
+                    shopMoney {
+                      amount
+                    }
+                  }
+                  variant {
+                    sku
+                  }
+                }
+              }
+            }
+            displayFinancialStatus
+            displayFulfillmentStatus
+            currencyCode
+            customer {
+              id
+              email
+              firstName
+              lastName
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const bulkData = (await executeGraphQLQuery(BULK_OPERATION_QUERY, {
+    query: bulkQuery,
+  })) as {
+    bulkOperationRunQuery: BulkOperationResponse;
+  };
+
+  if (bulkData.bulkOperationRunQuery.userErrors?.length > 0) {
+    throw new Error(
+      `Bulk operation errors: ${JSON.stringify(
+        bulkData.bulkOperationRunQuery.userErrors
+      )}`
+    );
+  }
+
+  const operationId = bulkData.bulkOperationRunQuery.bulkOperation.id;
+  return { operationId };
+}
+
+/**
+ * Fetch orders incrementally since a specific date
+ */
+export async function fetchOrdersIncremental(
+  sinceDate: string
+): Promise<Order[]> {
+  const allOrders: Order[] = [];
+  let hasNextPage = true;
+  let cursor: string | undefined = undefined;
+
+  while (hasNextPage) {
+    const result = await fetchOrdersFromShopify(250, cursor, sinceDate);
+    allOrders.push(...result.orders);
+    hasNextPage = result.hasNextPage;
+    cursor = result.endCursor || undefined;
+
+    // Safety limit
+    if (allOrders.length >= 10000) {
+      break;
+    }
+  }
+
+  return allOrders;
+}
+
 // Keep the old function for backward compatibility (e.g., for webhooks or small fetches)
 export async function fetchOrdersFromShopify(
   limit = 250,
-  after?: string
+  after?: string | undefined,
+  sinceDate?: string
 ): Promise<{
   orders: Order[];
   hasNextPage: boolean;
@@ -608,12 +833,21 @@ export async function fetchOrdersFromShopify(
   const config = getShopifyConfig();
   const graphqlUrl = `https://${config.shop}.myshopify.com/admin/api/2025-10/graphql.json`;
 
-  const variables: { first: number; after?: string } = {
+  const variables: {
+    first: number;
+    after?: string;
+    query?: string;
+  } = {
     first: Math.min(limit, 250),
   };
 
   if (after) {
     variables.after = after;
+  }
+
+  if (sinceDate) {
+    // Shopify query syntax: created_at:>='2024-01-01T00:00:00Z'
+    variables.query = `created_at:>='${sinceDate}'`;
   }
 
   const response = await fetch(graphqlUrl, {

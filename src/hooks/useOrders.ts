@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { Order } from "@/types/order";
 
@@ -14,7 +15,17 @@ interface OrdersResponse {
 
 interface SyncResponse {
   success: boolean;
-  synced: number;
+  synced?: number;
+  status?: string;
+  method?: "bulk" | "incremental";
+  operationId?: string;
+  isFirstSync?: boolean;
+}
+
+interface BulkStatusResponse {
+  status: "idle" | "pending" | "completed" | "failed" | "canceled";
+  operationId?: string;
+  synced?: number;
 }
 
 export function useOrders(page: number = 1, limit: number = 20) {
@@ -30,8 +41,95 @@ export function useOrders(page: number = 1, limit: number = 20) {
   });
 }
 
+export function useBulkSyncStatus() {
+  const queryClient = useQueryClient();
+  const BULK_TOAST_ID = "bulk-sync-status";
+  const isFinalizingRef = useRef(false);
+  const [isFinalizing, setIsFinalizing] = useState(false);
+
+  const query = useQuery<BulkStatusResponse>({
+    queryKey: ["bulkSyncStatus"],
+    queryFn: async () => {
+      const response = await fetch("/api/orders?status=bulk");
+      if (!response.ok) {
+        throw new Error("Failed to fetch bulk sync status");
+      }
+      return response.json();
+    },
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      // Poll every 5 seconds if status is pending, otherwise don't poll
+      return data?.status === "pending" ? 5000 : false;
+    },
+    refetchOnMount: true,
+  });
+
+  // Derive isFinalizing from query data
+  const derivedIsFinalizing =
+    query.data?.status === "pending" &&
+    query.data?.operationId !== undefined &&
+    query.data?.synced === undefined;
+
+  // Update state when derived value changes
+  useEffect(() => {
+    setIsFinalizing(derivedIsFinalizing);
+  }, [derivedIsFinalizing]);
+
+  // Watch for status changes and handle notifications
+  useEffect(() => {
+    const status = query.data?.status;
+    const synced = query.data?.synced;
+
+    if (!status) return;
+
+    if (status === "pending") {
+      // Show loading toast for pending status (updates existing toast if present)
+      toast.loading("Bulk sync in progress. This may take a few minutes.", {
+        id: BULK_TOAST_ID,
+      });
+    } else if (status === "idle" && synced !== undefined && synced > 0) {
+      // Finalization completed successfully with orders
+      isFinalizingRef.current = false;
+
+      // Invalidate queries to refresh data
+      queryClient.invalidateQueries({ queryKey: ["orders"] });
+      queryClient.invalidateQueries({ queryKey: ["metrics"] });
+
+      const message = `Successfully synced ${synced} orders from Shopify`;
+      toast.success(message, { id: BULK_TOAST_ID });
+    } else if (status === "idle" && synced === 0) {
+      // Finalization completed but no new orders
+      isFinalizingRef.current = false;
+      queryClient.invalidateQueries({ queryKey: ["orders"] });
+      queryClient.invalidateQueries({ queryKey: ["metrics"] });
+      toast.success("You're up to date. No new orders.", { id: BULK_TOAST_ID });
+    } else if (status === "failed" || status === "canceled") {
+      // Show error toast
+      isFinalizingRef.current = false;
+      toast.error(`Bulk sync ${status}. Please try again.`, {
+        id: BULK_TOAST_ID,
+      });
+      // Reset status after showing error
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ["bulkSyncStatus"] });
+      }, 2000);
+    }
+  }, [query.data?.status, query.data?.synced, queryClient]);
+
+  return {
+    ...query,
+    isFinalizing,
+  };
+}
+
 export function useSyncOrders() {
   const queryClient = useQueryClient();
+  const BULK_TOAST_ID = "bulk-sync-status";
+
+  const successMessage = (count?: number) =>
+    count && count > 0
+      ? `Successfully synced ${count} orders from Shopify`
+      : "You're up to date. No new orders.";
 
   return useMutation<SyncResponse, Error>({
     mutationFn: async () => {
@@ -43,20 +141,38 @@ export function useSyncOrders() {
         body: JSON.stringify({ sync: true }),
       });
 
+      const data = await response.json();
+
       if (!response.ok) {
-        const data = await response.json();
+        // Handle 409 conflict - bulk sync already in progress
+        if (response.status === 409 && data.status === "pending") {
+          // Invalidate bulk sync status to get the latest status
+          queryClient.invalidateQueries({ queryKey: ["bulkSyncStatus"] });
+          toast(
+            data.error || "A bulk sync is already in progress. Please wait.",
+            { icon: "ℹ️", id: BULK_TOAST_ID }
+          );
+          return data as SyncResponse;
+        }
         throw new Error(data.error || "Failed to sync orders");
       }
 
-      return response.json();
+      return data as SyncResponse;
     },
     onSuccess: (data) => {
-      // Invalidate and refetch orders queries
+      if (data.status === "pending") {
+        // Bulk sync started - invalidate status query to start polling
+        queryClient.invalidateQueries({ queryKey: ["bulkSyncStatus"] });
+        toast.loading("Bulk sync started. This may take a few minutes.", {
+          id: BULK_TOAST_ID,
+        });
+        return;
+      }
+
+      // Incremental sync completed immediately
       queryClient.invalidateQueries({ queryKey: ["orders"] });
-      // Invalidate and refetch metrics
       queryClient.invalidateQueries({ queryKey: ["metrics"] });
-      // Show success toast
-      toast.success(`Successfully synced ${data.synced} orders from Shopify`);
+      toast.success(successMessage(data.synced));
     },
     onError: (error) => {
       toast.error(error.message || "Failed to sync orders");
