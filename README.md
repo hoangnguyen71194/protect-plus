@@ -125,15 +125,85 @@ src/
 - **Full-stack Next.js**: Single codebase for faster development and simpler deployment
 - **Server Components**: Direct database access for better performance
 - **API Routes**: RESTful endpoints for client-side data fetching and webhooks
+- **React Query (TanStack Query)**: Client-side state management and caching for optimal data fetching and synchronization
+
+### Sync Strategy
+
+#### Smart Sync Selection
+The application uses a hybrid approach to sync orders from Shopify:
+
+- **Bulk Operations API**: Used for initial syncs or when >100 new orders are detected
+  - **Tradeoff**: Slower to start (requires Shopify to prepare data), but much more efficient for large datasets
+  - **Benefit**: Reduces API rate limit concerns and handles thousands of orders efficiently
+  - **Process**: Asynchronous - starts operation, polls for completion, then finalizes in background
+
+- **Incremental GraphQL Queries**: Used when <100 new orders need syncing
+  - **Tradeoff**: Multiple API calls for larger datasets, but immediate results
+  - **Benefit**: Fast response time for small updates, no waiting for bulk operation preparation
+  - **Process**: Synchronous - fetches and saves immediately
+
+**Decision Rationale**: This approach balances performance and user experience. Small updates are fast, while large syncs use the most efficient method available.
+
+#### Background Finalization
+Bulk sync finalization (downloading, parsing, and saving data) runs entirely on the server in the background:
+
+- **Tradeoff**: Requires polling mechanism on client to check status
+- **Benefit**: 
+  - Non-blocking - users can continue viewing existing orders during sync
+  - Better scalability - long-running operations don't tie up client connections
+  - Server-side processing is more reliable for large data operations
+- **Implementation**: Client polls `/api/orders?status=bulk` every 5 seconds when status is "pending"
 
 ### Data Modeling
 - **Flexible Schema**: Uses MongoDB's flexible document model to accommodate Shopify's order structure
+  - **Tradeoff**: Less strict validation compared to SQL schemas
+  - **Benefit**: Easy to adapt to Shopify API changes without migrations
 - **Upsert Strategy**: Prevents duplicate orders while allowing updates
+  - Uses order `id` as unique identifier
+  - Updates existing orders if they change in Shopify
 
-### Performance
+### State Management
+
+#### Server-Side Caching
+- **Bulk Sync State**: Stored in MongoDB `sync_state` collection with in-memory TTL cache (60s)
+  - **Tradeoff**: Requires database write for state updates
+  - **Benefit**: 
+    - Survives server restarts
+    - Reduces Shopify API calls (only checks when cache expires or status is pending)
+    - Fast reads from memory cache
+
+#### Client-Side State
+- **React Query**: Handles all client-side data fetching, caching, and synchronization
+  - **Tradeoff**: Additional bundle size (~50KB)
+  - **Benefit**:
+    - Automatic background refetching
+    - Optimistic updates
+    - Request deduplication
+    - Built-in loading/error states
+
+### User Experience
+
+#### Non-Blocking Sync
+- Orders remain visible and accessible during all sync operations
+- **Tradeoff**: Users might see slightly stale data during sync
+- **Benefit**: 
+  - Better perceived performance
+  - Users can continue working while sync happens in background
+  - Clear status indicators show what's happening
+
+#### Status Communication
+- Multiple status indicators: toast notifications, banner messages, and UI state
+- **Tradeoff**: More complex state management
+- **Benefit**: Users always know what's happening with clear, non-intrusive feedback
+
+### Performance Optimizations
 - **Pagination**: Default 20 items per page, configurable up to 100
+  - Reduces initial load time and memory usage
 - **Efficient Queries**: Indexed queries on `created_at` for fast sorting
-- **Caching**: Server-side data fetching with appropriate cache strategies
+- **Batch Writes**: Orders saved in batches of 1000 for optimal database performance
+- **Caching Strategy**: 
+  - Server-side: 60s TTL cache for bulk sync state
+  - Client-side: React Query manages cache with 1-minute stale time
 
 ## Development
 
