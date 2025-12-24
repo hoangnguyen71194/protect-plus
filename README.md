@@ -140,6 +140,17 @@ src/
 - **API Routes**: RESTful endpoints for client-side data fetching and order synchronization
 - **React Query (TanStack Query)**: Client-side state management and caching for optimal data fetching and synchronization
 
+#### Why Direct Webhooks Instead of GCP?
+
+For our current scale (~1000 orders/day), we use Shopify webhooks directly rather than routing through GCP services (Pub/Sub, Cloud Functions) because:
+
+- **Simplicity**: Direct webhook endpoints in Next.js are easier to develop, test, and maintain
+- **Cost**: No additional GCP service fees or infrastructure overhead
+- **Performance**: Lower latency with immediate processing, no queue delays
+- **Reliability**: Shopify automatically retries failed webhooks, which is sufficient for our needs
+
+If we scale significantly (10,000+ orders/day) or need complex event processing, we can migrate to GCP services later.
+
 ### Sync Strategy
 
 #### Smart Sync Selection
