@@ -46,6 +46,8 @@ export function useBulkSyncStatus() {
   const BULK_TOAST_ID = "bulk-sync-status";
   const isFinalizingRef = useRef(false);
   const [isFinalizing, setIsFinalizing] = useState(false);
+  const lastProcessedStateRef = useRef<string>("");
+  const previousStatusRef = useRef<string | undefined>(undefined);
 
   const query = useQuery<BulkStatusResponse>({
     queryKey: ["bulkSyncStatus"],
@@ -79,30 +81,66 @@ export function useBulkSyncStatus() {
   useEffect(() => {
     const status = query.data?.status;
     const synced = query.data?.synced;
+    const operationId = query.data?.operationId;
 
     if (!status) return;
+
+    // Create a unique key for this state to track if we've already processed it
+    const stateKey = `${status}-${operationId || ""}-${synced ?? ""}`;
+
+    // Skip if we've already processed this exact state
+    if (lastProcessedStateRef.current === stateKey) {
+      return;
+    }
+
+    const previousStatus = previousStatusRef.current;
+    const isTransitionFromPending =
+      previousStatus === "pending" && status === "idle";
 
     if (status === "pending") {
       // Show loading toast for pending status (updates existing toast if present)
       toast.loading("Bulk sync in progress. This may take a few minutes.", {
         id: BULK_TOAST_ID,
       });
+      lastProcessedStateRef.current = stateKey;
+      previousStatusRef.current = status;
     } else if (status === "idle" && synced !== undefined && synced > 0) {
-      // Finalization completed successfully with orders
-      isFinalizingRef.current = false;
+      // Only show success toast when transitioning from pending to idle
+      // This prevents showing the message on every page reload
+      if (isTransitionFromPending) {
+        // Finalization completed successfully with orders
+        isFinalizingRef.current = false;
 
-      // Invalidate queries to refresh data
-      queryClient.invalidateQueries({ queryKey: ["orders"] });
-      queryClient.invalidateQueries({ queryKey: ["metrics"] });
+        // Invalidate queries to refresh data
+        queryClient.invalidateQueries({ queryKey: ["orders"] });
+        queryClient.invalidateQueries({ queryKey: ["metrics"] });
 
-      const message = `Successfully synced ${synced} orders from Shopify`;
-      toast.success(message, { id: BULK_TOAST_ID });
+        const message = `Successfully synced ${synced} orders from Shopify`;
+        toast.success(message, { id: BULK_TOAST_ID });
+      } else {
+        // Just refresh data without showing toast (page reload scenario)
+        queryClient.invalidateQueries({ queryKey: ["orders"] });
+        queryClient.invalidateQueries({ queryKey: ["metrics"] });
+      }
+      lastProcessedStateRef.current = stateKey;
+      previousStatusRef.current = status;
     } else if (status === "idle" && synced === 0) {
-      // Finalization completed but no new orders
-      isFinalizingRef.current = false;
-      queryClient.invalidateQueries({ queryKey: ["orders"] });
-      queryClient.invalidateQueries({ queryKey: ["metrics"] });
-      toast.success("You're up to date. No new orders.", { id: BULK_TOAST_ID });
+      // Only show success if transitioning from pending
+      if (isTransitionFromPending) {
+        // Finalization completed but no new orders
+        isFinalizingRef.current = false;
+        queryClient.invalidateQueries({ queryKey: ["orders"] });
+        queryClient.invalidateQueries({ queryKey: ["metrics"] });
+        toast.success("You're up to date. No new orders.", {
+          id: BULK_TOAST_ID,
+        });
+      } else {
+        // Just refresh data without showing toast
+        queryClient.invalidateQueries({ queryKey: ["orders"] });
+        queryClient.invalidateQueries({ queryKey: ["metrics"] });
+      }
+      lastProcessedStateRef.current = stateKey;
+      previousStatusRef.current = status;
     } else if (status === "failed" || status === "canceled") {
       // Show error toast
       isFinalizingRef.current = false;
@@ -113,8 +151,19 @@ export function useBulkSyncStatus() {
       setTimeout(() => {
         queryClient.invalidateQueries({ queryKey: ["bulkSyncStatus"] });
       }, 2000);
+      lastProcessedStateRef.current = stateKey;
+      previousStatusRef.current = status;
+    } else if (status === "idle") {
+      // Just track the state, no action needed
+      lastProcessedStateRef.current = stateKey;
+      previousStatusRef.current = status;
     }
-  }, [query.data?.status, query.data?.synced, queryClient]);
+  }, [
+    query.data?.status,
+    query.data?.synced,
+    query.data?.operationId,
+    queryClient,
+  ]);
 
   return {
     ...query,
