@@ -5,6 +5,7 @@ A Shopify order analytics application built with Next.js, MongoDB, and Tailwind 
 ## Features
 
 - **Order Management**: View and manage orders from your Shopify store
+- **Automatic Webhooks**: Automatically sync new orders via Shopify webhooks when orders are created
 - **Manual Sync**: Sync orders from Shopify using bulk operations or incremental GraphQL queries
 - **Analytics Dashboard**: View key metrics including order volume, revenue, and shipping costs
 - **Pagination**: Flexible pagination with customizable page sizes (20, 50, 100)
@@ -41,6 +42,7 @@ MONGODB_URI=mongodb://localhost:27017/protect-plus
 # Shopify Configuration
 SHOPIFY_SHOP=your-shop-name
 SHOPIFY_ACCESS_TOKEN=your-access-token
+SHOPIFY_WEBHOOK_SECRET=your-webhook-secret
 ```
 
 ### 3. Start MongoDB
@@ -63,7 +65,29 @@ pnpm dev
 
 Open [http://localhost:3000](http://localhost:3000) to view the dashboard.
 
-## Order Sync
+## Shopify Webhook Setup
+
+To enable automatic order syncing when orders are created or updated in Shopify:
+
+1. Go to your Shopify Admin → Settings → Notifications → Webhooks
+2. Create webhooks for both events:
+   
+   **Order Creation Webhook:**
+   - **Event**: Order creation
+   - **Format**: JSON
+   - **URL**: `https://your-domain.com/api/webhooks/orders`
+   - **API version**: 2024-01
+   
+   **Order Update Webhook:**
+   - **Event**: Order update
+   - **Format**: JSON
+   - **URL**: `https://your-domain.com/api/webhooks/orders/update`
+   - **API version**: 2024-01
+3. Copy the webhook secret (same for both) and add it to `.env.local` as `SHOPIFY_WEBHOOK_SECRET`
+
+**Note**: For local development, use a tool like [ngrok](https://ngrok.com/) to expose your local server to the internet so Shopify can send webhooks to it.
+
+## Manual Order Sync
 
 You can manually sync orders from Shopify by calling:
 
@@ -83,6 +107,8 @@ Content-Type: application/json
 - `GET /api/orders/[id]` - Get single order details
 - `GET /api/metrics?days=30` - Get analytics metrics
 - `GET /api/orders?status=bulk` - Check bulk sync status
+- `POST /api/webhooks/orders` - Shopify webhook endpoint for order creation
+- `POST /api/webhooks/orders/update` - Shopify webhook endpoint for order updates
 
 ## Project Structure
 
@@ -91,7 +117,8 @@ src/
 ├── app/
 │   ├── api/
 │   │   ├── orders/          # Order API routes
-│   │   └── metrics/         # Metrics API route
+│   │   ├── metrics/         # Metrics API route
+│   │   └── webhooks/        # Webhook endpoints
 │   ├── page.tsx             # Dashboard page
 │   └── layout.tsx            # Root layout
 ├── components/

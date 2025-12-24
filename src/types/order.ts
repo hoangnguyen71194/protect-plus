@@ -44,6 +44,9 @@ export interface Order {
     first_name?: string;
     last_name?: string;
   };
+  syncStatus?: "success" | "failed" | "pending";
+  syncError?: string;
+  syncedAt?: string;
 }
 
 export interface OrderMetrics {

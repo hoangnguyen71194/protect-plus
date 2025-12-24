@@ -1,4 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import toast from "react-hot-toast";
 import { Order } from "@/types/order";
 
 interface OrderResponse {
@@ -19,3 +20,40 @@ export function useOrder(id: string) {
   });
 }
 
+export function useResyncOrder() {
+  const queryClient = useQueryClient();
+
+  return useMutation<
+    { success: boolean; order?: Order; error?: string },
+    Error,
+    string
+  >({
+    mutationFn: async (orderId: string) => {
+      const response = await fetch(`/api/orders/${orderId}`, {
+        method: "POST",
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to sync order");
+      }
+
+      return data;
+    },
+    onSuccess: (data, orderId) => {
+      if (data.success) {
+        // Invalidate queries to refresh data
+        queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+        queryClient.invalidateQueries({ queryKey: ["orders"] });
+        queryClient.invalidateQueries({ queryKey: ["metrics"] });
+        toast.success("Order synced successfully");
+      } else {
+        toast.error(data.error || "Failed to sync order");
+      }
+    },
+    onError: (error) => {
+      toast.error(error.message || "Failed to sync order");
+    },
+  });
+}

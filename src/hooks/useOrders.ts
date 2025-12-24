@@ -16,6 +16,8 @@ interface OrdersResponse {
 interface SyncResponse {
   success: boolean;
   synced?: number;
+  new?: number;
+  updated?: number;
   status?: string;
   method?: "bulk" | "incremental";
   operationId?: string;
@@ -175,10 +177,34 @@ export function useSyncOrders() {
   const queryClient = useQueryClient();
   const BULK_TOAST_ID = "bulk-sync-status";
 
-  const successMessage = (count?: number) =>
-    count && count > 0
-      ? `Successfully synced ${count} orders from Shopify`
-      : "You're up to date. No new orders.";
+  const successMessage = (data: SyncResponse) => {
+    if (!data.synced || data.synced === 0) {
+      return "You're up to date. No new orders.";
+    }
+
+    // Ensure we have valid numbers (handle undefined/null)
+    const newCount = data.new ?? 0;
+    const updatedCount = data.updated ?? 0;
+
+    const parts: string[] = [];
+    if (newCount > 0) {
+      parts.push(`${newCount} new`);
+    }
+    if (updatedCount > 0) {
+      parts.push(`${updatedCount} updated`);
+    }
+
+    if (parts.length > 0) {
+      return `Successfully synced ${parts.join(" and ")} order${
+        data.synced !== 1 ? "s" : ""
+      } from Shopify`;
+    }
+
+    // Fallback to total count if new/updated not available or both are 0
+    return `Successfully synced ${data.synced} order${
+      data.synced !== 1 ? "s" : ""
+    } from Shopify`;
+  };
 
   return useMutation<SyncResponse, Error>({
     mutationFn: async () => {
@@ -221,7 +247,7 @@ export function useSyncOrders() {
       // Incremental sync completed immediately
       queryClient.invalidateQueries({ queryKey: ["orders"] });
       queryClient.invalidateQueries({ queryKey: ["metrics"] });
-      toast.success(successMessage(data.synced));
+      toast.success(successMessage(data));
     },
     onError: (error) => {
       toast.error(error.message || "Failed to sync orders");

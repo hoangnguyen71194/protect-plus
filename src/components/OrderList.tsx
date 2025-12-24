@@ -3,16 +3,117 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useOrders, useSyncOrders, useBulkSyncStatus } from "@/hooks/useOrders";
+import { useResyncOrder } from "@/hooks/useOrder";
 import {
   ClockIcon,
   SearchIcon,
   SpinnerIcon,
   SyncIcon,
 } from "@/components/icons";
+import { Order } from "@/types/order";
 
 interface OrderListProps {
   initialPage?: number;
   initialLimit?: number;
+}
+
+interface OrderRowProps {
+  order: Order;
+  formatDate: (date: string) => string;
+  formatCurrency: (amount: string, currency?: string) => string;
+}
+
+function OrderRow({ order, formatDate, formatCurrency }: OrderRowProps) {
+  const resyncMutation = useResyncOrder();
+
+  const getSyncStatusBadge = () => {
+    if (!order.syncStatus) {
+      return (
+        <span className="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
+          Not synced
+        </span>
+      );
+    }
+
+    switch (order.syncStatus) {
+      case "success":
+        return (
+          <span className="px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800">
+            ✓ Synced
+          </span>
+        );
+      case "pending":
+        return (
+          <span className="px-2 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-800 flex items-center gap-1">
+            <SpinnerIcon className="h-3 w-3 animate-spin" />
+            Syncing...
+          </span>
+        );
+      case "failed":
+        return (
+          <div className="flex items-center gap-2">
+            <span className="px-2 py-1 text-xs font-medium rounded-full bg-red-100 text-red-800">
+              ✗ Failed
+            </span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                resyncMutation.mutate(order.id);
+              }}
+              disabled={resyncMutation.isPending}
+              className="text-xs text-blue-600 hover:text-blue-700 disabled:opacity-50"
+              title={order.syncError || "Re-sync order"}
+            >
+              <SyncIcon className="h-3 w-3" />
+            </button>
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <tr key={order.id} className="hover:bg-gray-50">
+      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+        <Link
+          href={`/orders/${order.id}`}
+          className="text-blue-600 hover:text-blue-700 hover:underline"
+        >
+          #{order.order_number}
+        </Link>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+        {formatDate(order.created_at)}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+        {order.customer
+          ? `${order.customer.first_name || ""} ${
+              order.customer.last_name || ""
+            }`.trim() || order.email
+          : order.email || "N/A"}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+        {order.line_items.length} item
+        {order.line_items.length !== 1 ? "s" : ""}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+        {formatCurrency(order.total_price, order.currency)}
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap">
+        <span
+          className={`px-2 py-1 text-xs font-medium rounded-full capitalize ${
+            order.financial_status?.toLocaleLowerCase() === "paid" || false
+              ? "bg-green-100 text-green-800"
+              : "bg-yellow-100 text-yellow-800"
+          }`}
+        >
+          {order.financial_status?.toLocaleLowerCase() || "pending"}
+        </span>
+      </td>
+      <td className="px-6 py-4 whitespace-nowrap">{getSyncStatusBadge()}</td>
+    </tr>
+  );
 }
 
 export default function OrderList({
@@ -197,7 +298,7 @@ export default function OrderList({
 
       {isLoading ? (
         <div className="overflow-x-auto">
-          <table className="w-full table-fixed min-w-[1000px]">
+          <table className="w-full table-fixed min-w-[1140px]">
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[120px]">
@@ -217,6 +318,9 @@ export default function OrderList({
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[120px]">
                   Status
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[140px]">
+                  Sync Status
                 </th>
               </tr>
             </thead>
@@ -240,6 +344,9 @@ export default function OrderList({
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="h-6 bg-gray-200 rounded-full w-16"></div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="h-6 bg-gray-200 rounded-full w-20"></div>
                   </td>
                 </tr>
               ))}
@@ -304,7 +411,7 @@ export default function OrderList({
         <>
           {/* Desktop Table View */}
           <div className="hidden md:block overflow-x-auto">
-            <table className="w-full table-fixed min-w-[1000px]">
+            <table className="w-full table-fixed min-w-[1140px]">
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[120px]">
@@ -325,48 +432,19 @@ export default function OrderList({
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[120px]">
                     Status
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-[140px]">
+                    Sync Status
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {orders.map((order) => (
-                  <tr key={order.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                      <Link
-                        href={`/orders/${order.id}`}
-                        className="text-blue-600 hover:text-blue-700 hover:underline"
-                      >
-                        #{order.order_number}
-                      </Link>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {formatDate(order.created_at)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {order.customer
-                        ? `${order.customer.first_name || ""} ${
-                            order.customer.last_name || ""
-                          }`.trim() || order.email
-                        : order.email || "N/A"}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {order.line_items.length} item
-                      {order.line_items.length !== 1 ? "s" : ""}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                      {formatCurrency(order.total_price, order.currency)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span
-                        className={`px-2 py-1 text-xs font-medium rounded-full ${
-                          order.financial_status === "paid"
-                            ? "bg-green-100 text-green-800"
-                            : "bg-yellow-100 text-yellow-800"
-                        }`}
-                      >
-                        {order.financial_status || "pending"}
-                      </span>
-                    </td>
-                  </tr>
+                  <OrderRow
+                    key={order.id}
+                    order={order}
+                    formatDate={formatDate}
+                    formatCurrency={formatCurrency}
+                  />
                 ))}
               </tbody>
             </table>
@@ -392,7 +470,7 @@ export default function OrderList({
                     </div>
                   </div>
                   <span
-                    className={`px-2 py-1 text-xs font-medium rounded-full ${
+                    className={`px-2 py-1 text-xs font-medium rounded-full capitalize ${
                       order.financial_status === "paid"
                         ? "bg-green-100 text-green-800"
                         : "bg-yellow-100 text-yellow-800"

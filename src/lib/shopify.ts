@@ -1,3 +1,4 @@
+import { createHmac } from "crypto";
 import { Order } from "@/types/order";
 
 interface ShopifyConfig {
@@ -283,6 +284,76 @@ const CURRENT_BULK_OPERATION_QUERY = `
   }
 `;
 
+const SINGLE_ORDER_QUERY = `
+  query getOrder($id: ID!) {
+    order(id: $id) {
+      id
+      name
+      email
+      createdAt
+      updatedAt
+      totalPriceSet {
+        shopMoney {
+          amount
+          currencyCode
+        }
+      }
+      subtotalPriceSet {
+        shopMoney {
+          amount
+        }
+      }
+      totalTaxSet {
+        shopMoney {
+          amount
+        }
+      }
+      totalShippingPriceSet {
+        shopMoney {
+          amount
+          currencyCode
+        }
+      }
+      shippingAddress {
+        firstName
+        lastName
+        address1
+        address2
+        city
+        province
+        country
+        zip
+      }
+      lineItems(first: 250) {
+        edges {
+          node {
+            id
+            title
+            quantity
+            originalUnitPriceSet {
+              shopMoney {
+                amount
+              }
+            }
+            variant {
+              sku
+            }
+          }
+        }
+      }
+      displayFinancialStatus
+      displayFulfillmentStatus
+      currencyCode
+      customer {
+        id
+        email
+        firstName
+        lastName
+      }
+    }
+  }
+`;
+
 interface BulkOperationResponse {
   bulkOperation: {
     id: string;
@@ -532,7 +603,7 @@ export async function syncOrdersBulk(sinceDate?: string): Promise<Order[]> {
       orders`;
 
   if (sinceDate) {
-    bulkQuery += `(query: "created_at:>='${sinceDate}'")`;
+    bulkQuery += `(query: "updated_at:>='${sinceDate}'")`;
   }
 
   bulkQuery += ` {
@@ -635,7 +706,7 @@ export async function syncOrdersBulk(sinceDate?: string): Promise<Order[]> {
 }
 
 /**
- * Count orders created after a specific date
+ * Count orders updated after a specific date
  * Returns the count, but stops early if it exceeds the threshold
  */
 export async function countOrdersSinceDate(
@@ -700,7 +771,7 @@ export async function startOrdersBulk(
       orders`;
 
   if (sinceDate) {
-    bulkQuery += `(query: "created_at:>='${sinceDate}'")`;
+    bulkQuery += `(query: "updated_at:>='${sinceDate}'")`;
   }
 
   bulkQuery += ` {
@@ -795,7 +866,7 @@ export async function startOrdersBulk(
 }
 
 /**
- * Fetch orders incrementally since a specific date
+ * Fetch orders incrementally updated since a specific date
  */
 export async function fetchOrdersIncremental(
   sinceDate: string
@@ -817,6 +888,178 @@ export async function fetchOrdersIncremental(
   }
 
   return allOrders;
+}
+
+/**
+ * Fetch multiple orders by their IDs from Shopify
+ */
+export async function fetchOrdersByIds(orderIds: string[]): Promise<Order[]> {
+  const orders: Order[] = [];
+
+  // Fetch orders in parallel (but limit concurrency to avoid rate limits)
+  const batchSize = 10;
+  for (let i = 0; i < orderIds.length; i += batchSize) {
+    const batch = orderIds.slice(i, i + batchSize);
+    const batchPromises = batch.map((id) =>
+      fetchOrderById(id).catch((error) => {
+        console.error(`Error fetching order ${id}:`, error);
+        return null;
+      })
+    );
+
+    const batchResults = await Promise.all(batchPromises);
+    const validOrders = batchResults.filter(
+      (order): order is Order => order !== null
+    );
+    orders.push(...validOrders);
+  }
+
+  return orders;
+}
+
+/**
+ * Verify webhook signature from Shopify
+ */
+export function verifyWebhookSignature(
+  body: string,
+  signature: string,
+  secret: string
+): boolean {
+  const hmac = createHmac("sha256", secret);
+  hmac.update(body, "utf8");
+  const calculatedSignature = hmac.digest("base64");
+  return calculatedSignature === signature;
+}
+
+interface WebhookLineItem {
+  id?: number | string;
+  title?: string;
+  quantity?: number;
+  price?: string;
+  sku?: string;
+}
+
+interface WebhookShippingAddress {
+  first_name?: string;
+  last_name?: string;
+  address1?: string;
+  address2?: string;
+  city?: string;
+  province?: string;
+  country?: string;
+  zip?: string;
+}
+
+interface WebhookCustomer {
+  id?: number | string;
+  email?: string;
+  first_name?: string;
+  last_name?: string;
+}
+
+interface WebhookShippingPriceSet {
+  shop_money?: {
+    amount?: string;
+    currency_code?: string;
+  };
+}
+
+interface WebhookOrder {
+  id?: number | string;
+  name?: string;
+  email?: string;
+  created_at?: string;
+  updated_at?: string;
+  total_price?: string;
+  subtotal_price?: string;
+  total_tax?: string;
+  total_shipping_price_set?: WebhookShippingPriceSet;
+  shipping_address?: WebhookShippingAddress;
+  line_items?: WebhookLineItem[];
+  financial_status?: string;
+  fulfillment_status?: string;
+  currency?: string;
+  customer?: WebhookCustomer;
+}
+
+/**
+ * Fetch a single order from Shopify by ID
+ */
+export async function fetchOrderById(orderId: string): Promise<Order> {
+  const shopifyOrderId = `gid://shopify/Order/${orderId}`;
+  const data = (await executeGraphQLQuery(SINGLE_ORDER_QUERY, {
+    id: shopifyOrderId,
+  })) as {
+    order: GraphQLOrderNode | null;
+  };
+
+  if (!data.order) {
+    throw new Error(`Order ${orderId} not found in Shopify`);
+  }
+
+  return transformGraphQLOrderToOrder(data.order);
+}
+
+/**
+ * Transform Shopify REST API order format (from webhooks) to our Order type
+ */
+export function transformWebhookOrderToOrder(
+  webhookOrder: WebhookOrder
+): Order {
+  const orderNumber = parseInt(webhookOrder.name?.replace("#", "") || "0") || 0;
+
+  return {
+    id: webhookOrder.id?.toString() || "",
+    order_number: orderNumber,
+    email: webhookOrder.email || undefined,
+    created_at: webhookOrder.created_at || new Date().toISOString(),
+    updated_at: webhookOrder.updated_at || new Date().toISOString(),
+    total_price: webhookOrder.total_price || "0",
+    subtotal_price: webhookOrder.subtotal_price || "0",
+    total_tax: webhookOrder.total_tax || "0",
+    total_shipping_price_set: webhookOrder.total_shipping_price_set
+      ? {
+          shop_money: {
+            amount:
+              webhookOrder.total_shipping_price_set.shop_money?.amount || "0",
+            currency_code:
+              webhookOrder.total_shipping_price_set.shop_money?.currency_code ||
+              "USD",
+          },
+        }
+      : undefined,
+    shipping_address: webhookOrder.shipping_address
+      ? {
+          first_name: webhookOrder.shipping_address.first_name || undefined,
+          last_name: webhookOrder.shipping_address.last_name || undefined,
+          address1: webhookOrder.shipping_address.address1 || undefined,
+          address2: webhookOrder.shipping_address.address2 || undefined,
+          city: webhookOrder.shipping_address.city || undefined,
+          province: webhookOrder.shipping_address.province || undefined,
+          country: webhookOrder.shipping_address.country || undefined,
+          zip: webhookOrder.shipping_address.zip || undefined,
+        }
+      : undefined,
+    line_items:
+      webhookOrder.line_items?.map((item: WebhookLineItem) => ({
+        id: item.id?.toString() || "",
+        title: item.title || "",
+        quantity: item.quantity || 0,
+        price: item.price || "0",
+        sku: item.sku || undefined,
+      })) || [],
+    financial_status: webhookOrder.financial_status || undefined,
+    fulfillment_status: webhookOrder.fulfillment_status || undefined,
+    currency: webhookOrder.currency || "USD",
+    customer: webhookOrder.customer
+      ? {
+          id: webhookOrder.customer.id?.toString() || "",
+          email: webhookOrder.customer.email || undefined,
+          first_name: webhookOrder.customer.first_name || undefined,
+          last_name: webhookOrder.customer.last_name || undefined,
+        }
+      : undefined,
+  };
 }
 
 // Keep the old function for backward compatibility or small fetches
@@ -845,8 +1088,8 @@ export async function fetchOrdersFromShopify(
   }
 
   if (sinceDate) {
-    // Shopify query syntax: created_at:>='2024-01-01T00:00:00Z'
-    variables.query = `created_at:>='${sinceDate}'`;
+    // Shopify query syntax: updated_at:>='2024-01-01T00:00:00Z' to get orders updated since date
+    variables.query = `updated_at:>='${sinceDate}'`;
   }
 
   const response = await fetch(graphqlUrl, {

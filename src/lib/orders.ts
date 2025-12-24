@@ -64,6 +64,9 @@ export function serializeOrder(order: Order): Order {
           last_name: order.customer.last_name,
         }
       : undefined,
+    syncStatus: order.syncStatus,
+    syncError: order.syncError,
+    syncedAt: order.syncedAt,
   };
 }
 
@@ -242,4 +245,26 @@ export async function updateBulkSyncState(
 
   cachedBulkState = newState;
   cachedBulkStateAt = Date.now();
+}
+
+/**
+ * Get unfulfilled orders from the database that need to be re-synced
+ */
+export async function getUnfulfilledOrders(): Promise<Order[]> {
+  const db = await getDb();
+  const ordersCollection = db.collection<Order>("orders");
+
+  // Get orders that are not fulfilled (null, undefined, or not "fulfilled")
+  // $ne: "fulfilled" will match null, undefined, and any other value that's not "fulfilled"
+  const orders = await ordersCollection
+    .find({
+      $or: [
+        { fulfillment_status: { $exists: false } },
+        { fulfillment_status: { $ne: "fulfilled" } },
+      ],
+    })
+    .limit(1000) // Limit to prevent too many re-syncs
+    .toArray();
+
+  return orders.map((order) => serializeOrder(order));
 }

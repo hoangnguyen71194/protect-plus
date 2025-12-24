@@ -1,7 +1,8 @@
 "use client";
 
-import { useOrder } from "@/hooks/useOrder";
+import { useOrder, useResyncOrder } from "@/hooks/useOrder";
 import Link from "next/link";
+import { SyncIcon, SpinnerIcon } from "@/components/icons";
 
 interface OrderDetailProps {
   orderId: string;
@@ -9,6 +10,7 @@ interface OrderDetailProps {
 
 export default function OrderDetail({ orderId }: OrderDetailProps) {
   const { data, isLoading, error } = useOrder(orderId);
+  const resyncMutation = useResyncOrder();
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString("en-US", {
@@ -89,21 +91,68 @@ export default function OrderDetail({ orderId }: OrderDetailProps) {
               {formatDate(order.created_at)}
             </p>
           </div>
-          <div className="flex gap-2">
-            <span
-              className={`px-3 py-1 text-sm font-medium rounded-full ${
-                order.financial_status === "paid"
-                  ? "bg-green-100 text-green-800"
-                  : "bg-yellow-100 text-yellow-800"
-              }`}
-            >
-              {order.financial_status || "pending"}
-            </span>
-            {order.fulfillment_status && (
-              <span className="px-3 py-1 text-sm font-medium rounded-full bg-blue-100 text-blue-800">
-                {order.fulfillment_status}
+          <div className="flex flex-col gap-2 items-end">
+            <div className="flex gap-2">
+              <span
+                className={`px-3 py-1 text-sm font-medium rounded-full capitalize ${
+                  order.financial_status === "paid"
+                    ? "bg-green-100 text-green-800"
+                    : "bg-yellow-100 text-yellow-800"
+                }`}
+              >
+                {order.financial_status?.toLocaleLowerCase() || "pending"}
               </span>
-            )}
+              {order.fulfillment_status && (
+                <span className="px-3 py-1 text-sm font-medium rounded-full bg-blue-100 text-blue-800 capitalize">
+                  {order.fulfillment_status.toLocaleLowerCase() || "pending"}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {order.syncStatus === "failed" && (
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-1 text-xs font-medium rounded-full bg-red-100 text-red-800">
+                    Sync Failed
+                  </span>
+                  {order.syncError && (
+                    <span
+                      className="text-xs text-gray-500"
+                      title={order.syncError}
+                    >
+                      {order.syncError}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => resyncMutation.mutate(orderId)}
+                    disabled={resyncMutation.isPending}
+                    className="px-2 py-1 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                  >
+                    {resyncMutation.isPending ? (
+                      <>
+                        <SpinnerIcon className="h-3 w-3 animate-spin" />
+                        Syncing...
+                      </>
+                    ) : (
+                      <>
+                        <SyncIcon className="h-3 w-3" />
+                        Re-sync
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+              {order.syncStatus === "pending" && (
+                <span className="px-2 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-800 flex items-center gap-1">
+                  <SpinnerIcon className="h-3 w-3 animate-spin" />
+                  Syncing...
+                </span>
+              )}
+              {order.syncStatus === "success" && (
+                <span className="px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800">
+                  ✓ Synced
+                </span>
+              )}
+            </div>
           </div>
         </div>
         <Link
