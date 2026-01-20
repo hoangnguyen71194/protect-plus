@@ -12,7 +12,6 @@ export default function MetricsChart() {
     totalShipping: 0,
     averageOrderValue: 0,
   };
-  console.log(summary);
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat("en-US", {
       style: "currency",
